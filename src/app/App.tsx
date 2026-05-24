@@ -1,4 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+
+const AI_SERVER = 'http://localhost:8000';
 
 export default function App() {
   const [heaterOn, setHeaterOn] = useState(false);
@@ -9,6 +11,20 @@ export default function App() {
   const [temperature, setTemperature] = useState(22);
   const [humidity, setHumidity] = useState(45);
   const [co2, setCo2] = useState(400);
+
+  // AI mode state
+  const [aiMode, setAiMode] = useState(false);
+  const [aiStatus, setAiStatus] = useState<'idle' | 'thinking' | 'error'>('idle');
+  const [aiConfidence, setAiConfidence] = useState<Record<string, number> | null>(null);
+  const [aiLastAction, setAiLastAction] = useState<string>('');
+
+  // Refs so the AI polling closure always sees latest sensor values
+  const tempRef = useRef(temperature);
+  const humRef  = useRef(humidity);
+  const co2Ref  = useRef(co2);
+  useEffect(() => { tempRef.current = temperature; }, [temperature]);
+  useEffect(() => { humRef.current  = humidity;    }, [humidity]);
+  useEffect(() => { co2Ref.current  = co2;         }, [co2]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -39,8 +55,90 @@ export default function App() {
     return () => clearInterval(interval);
   }, [heaterOn, acOn, windowsOpen, doorOpen]);
 
+  // ── AI polling loop ────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!aiMode) {
+      setAiStatus('idle');
+      return;
+    }
+
+    const poll = async () => {
+      setAiStatus('thinking');
+      try {
+        const res = await fetch(`${AI_SERVER}/predict`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            temperature: tempRef.current,
+            humidity:    humRef.current,
+            co2:         co2Ref.current,
+          }),
+        });
+        const data = await res.json();
+
+        setHeaterOn(data.heater);
+        setAcOn(data.ac);
+        setWindowsOpen(data.window);
+        setAiConfidence(data.confidence);
+        setAiStatus('idle');
+
+        const actions = [
+          data.heater  ? 'HEATER ON'  : 'HEATER OFF',
+          data.ac      ? 'AC ON'      : 'AC OFF',
+          data.window  ? 'WIN OPEN'   : 'WIN CLOSED',
+        ].join(' · ');
+        setAiLastAction(actions);
+      } catch {
+        setAiStatus('error');
+      }
+    };
+
+    poll(); // immediate first call
+    const id = setInterval(poll, 3000);
+    return () => clearInterval(id);
+  }, [aiMode]);
+
   return (
     <div className="size-full flex flex-col items-center justify-center bg-[#1a1a2e] p-8">
+      {/* AI Mode Toggle */}
+      <div className="flex items-center gap-4 mb-6 bg-[#0f0f1e] border-2 border-[#00ff00] px-6 py-3 font-mono">
+        <span className="text-[#00ff00] text-sm">AI CONTROL</span>
+        <button
+          onClick={() => setAiMode(m => !m)}
+          className={`w-14 h-7 rounded-full border-2 relative transition-colors duration-300 ${
+            aiMode ? 'bg-[#00ff00] border-[#00ff00]' : 'bg-transparent border-[#006600]'
+          }`}
+        >
+          <span className={`absolute top-0.5 w-5 h-5 rounded-full transition-all duration-300 ${
+            aiMode ? 'left-7 bg-[#0f0f1e]' : 'left-0.5 bg-[#006600]'
+          }`} />
+        </button>
+        <span className={`text-xs ${
+          aiStatus === 'error'    ? 'text-red-400' :
+          aiStatus === 'thinking' ? 'text-yellow-400 animate-pulse' :
+          aiMode                  ? 'text-[#00ff00]' : 'text-[#006600]'
+        }`}>
+          {aiStatus === 'error'    ? '⚠ SERVER OFFLINE' :
+           aiStatus === 'thinking' ? '◌ THINKING…' :
+           aiMode                  ? '● ACTIVE' : '○ MANUAL'}
+        </span>
+        {aiMode && aiLastAction && (
+          <span className="text-[#00ff00] text-xs opacity-70 ml-2">{aiLastAction}</span>
+        )}
+      </div>
+
+      {/* Confidence panel — shown only in AI mode */}
+      {aiMode && aiConfidence && (
+        <div className="flex gap-4 mb-4 font-mono text-xs">
+          {Object.entries(aiConfidence).map(([key, val]) => (
+            <div key={key} className="bg-[#0f0f1e] border border-[#006600] px-3 py-1">
+              <span className="text-[#006600]">{key.toUpperCase()} </span>
+              <span className="text-[#00ff00]">{(val * 100).toFixed(0)}%</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Meters Panel */}
       <div className="flex gap-6 mb-8">
         <div className="bg-[#0f0f1e] border-2 border-[#00ff00] p-4 font-mono">
@@ -84,8 +182,8 @@ export default function App() {
 
         {/* North Wall - Windows */}
         <g
-          onClick={() => setWindowsOpen(!windowsOpen)}
-          style={{ cursor: 'pointer' }}
+          onClick={() => !aiMode && setWindowsOpen(!windowsOpen)}
+          style={{ cursor: aiMode ? 'not-allowed' : 'pointer' }}
         >
           <rect
             x="250"
@@ -112,8 +210,8 @@ export default function App() {
 
         {/* East Wall - Air Conditioner */}
         <g
-          onClick={() => setAcOn(!acOn)}
-          style={{ cursor: 'pointer' }}
+          onClick={() => !aiMode && setAcOn(!acOn)}
+          style={{ cursor: aiMode ? 'not-allowed' : 'pointer' }}
         >
           <rect
             x="496"
@@ -174,8 +272,8 @@ export default function App() {
 
         {/* West Wall - Heater */}
         <g
-          onClick={() => setHeaterOn(!heaterOn)}
-          style={{ cursor: 'pointer' }}
+          onClick={() => !aiMode && setHeaterOn(!heaterOn)}
+          style={{ cursor: aiMode ? 'not-allowed' : 'pointer' }}
         >
           <rect
             x="100"
